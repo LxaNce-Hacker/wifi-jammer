@@ -1,7 +1,6 @@
 # wifi-jammer
 This tool is used to jam any wifi network in your local area network.
 ### THIS TOOL IS CREATED FOR EDUCATIONAL PURPOSE, DON'T MISUSE IT.
-<br><br>
 ## Installing Process 👇
 ```$ git clone https://github.com/LxaNce-Hacker/wifi-jammer```<br>
 ```$ cd wifi-jammer```<br>
