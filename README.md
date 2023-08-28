@@ -6,7 +6,7 @@ This tool is used to jam any wifi network in your local area network.
 ```$ cd wifi-jammer```<br>
 ## Setup Process 👇
 ```$ chmod +x wifi```<br>
-```$ bash setup.sh```<br><br>
+```$ bash setup.sh```<br>
 ## Usage 👇
 ```$ wifi --monitor start``` ==>To Start Monitor Mode <br>
 ```$ wifi --monitor stop```  ==>To Stop Montior Mode <br>
