@@ -101,7 +101,7 @@ case "$1" in
         echo "Usage: wifi --monitor start"
         echo "       wifi --monitor stop"
         echo "       wifi --status"
-        echo "       wifi --status --bssid <bssid_name> --channel <channel_number>"
+        echo "       wifi --bssid <bssid_name> --channel <channel_number>"
         echo "       wifi --attack --bssid <bssid_name>"
         exit 1
         ;;
