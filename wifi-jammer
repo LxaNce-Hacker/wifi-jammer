@@ -1,8 +1,8 @@
 #!/bin/bash
 
-_version_=1.2
+_version_=1.3
 
-trap cleanup EXIT
+BASE_DIR="/usr/local/bin"
 
 # Colors
 RED='\033[1;31m'
@@ -13,16 +13,28 @@ BLUE='\033[1;34m'
 MAGENTA='\033[1;35m'
 RESET='\033[0m'
 
+skip_update=false
+case "$1" in
+  --help|-h)
+    echo -e "${CYAN}Usage: ${WHITE}wifi-jammer [options]${RESET}"
+    echo -e "\n${CYAN}Options:${RESET}"
+    echo -e "  ${GREEN}--help, -h${RESET}      Show this help message and exit"
+    echo -e "  ${GREEN}--force${RESET}         Skip update check and run tool directly"
+    echo -e "\n${CYAN}Examples:${RESET}"
+    echo -e "  ${WHITE}sudo wifi-jammer${RESET}"
+    echo -e "  ${WHITE}sudo wifi-jammer --force${RESET}"
+    exit 0
+    ;;
+  --force)
+    skip_update=true
+    ;;
+esac
+
 # Root check
 if [[ $EUID -ne 0 ]]; then
   echo -e "${RED}Run as root!${RESET}"
   exit 1
 fi
-
-# Detect interface
-interface=$(iw dev | awk '$1=="Interface"{print $2}' | head -1)
-mon_interface=""
-scan_term_pid=""
 
 # Cleanup function
 cleanup() {
@@ -50,6 +62,57 @@ cleanup() {
   tput cnorm
   exit 0
 }
+
+trap cleanup EXIT
+
+# Function to check for latest version from GitHub
+check_update() {
+    echo -ne "\n${GREEN}[+]${CYAN} Checking for update: ${RESET}"
+
+    release_url='https://api.github.com/repos/LxaNce-Hacker/wifi-jammer/releases/latest'
+    new_version=$(curl -s "$release_url" | grep '"tag_name":' | awk -F\" '{print $4}')
+    tarball_url="https://github.com/LxaNce-Hacker/wifi-jammer/archive/refs/tags/${new_version}.tar.gz"
+
+    if [[ "$new_version" != "$_version_" ]]; then
+        echo -e "${ORANGE}Update found → $new_version${RESET}"
+        sleep 1
+        echo -e "${CYAN}[+] Downloading update...${RESET}"
+
+        TMP_DIR=$(mktemp -d)
+        curl -sL --fail "$tarball_url" -o "$TMP_DIR/wifi-jammer.tar.gz"
+
+        if [[ -f "$TMP_DIR/wifi-jammer.tar.gz" ]]; then
+            tar -xf "$TMP_DIR/wifi-jammer.tar.gz" -C "$TMP_DIR" --strip-components=1
+
+            if [[ -f "$TMP_DIR/wifi-jammer" ]]; then
+                chmod +x "$TMP_DIR/wifi-jammer"
+                install -m 755 "$TMP_DIR/wifi-jammer" /usr/local/bin/wifi-jammer
+                echo -e "${GREEN}[✓] Updated successfully to v$new_version! Relaunching...${RESET}"
+                rm -rf "$TMP_DIR"
+
+                # Relaunch the updated tool
+                exec /usr/local/bin/wifi-jammer "$@"
+            else
+                echo -e "${RED}[!] Extraction failed.${RESET}"
+                rm -rf "$TMP_DIR"
+                exit 1
+            fi
+        else
+            echo -e "${RED}[!] Failed to download update.${RESET}"
+            exit 1
+        fi
+    else
+        echo -e "${GREEN}Up to date (v$_version_)${RESET}"
+    fi
+}
+
+
+
+
+# Detect interface
+interface=$(iw dev | awk '$1=="Interface"{print $2}' | head -1)
+mon_interface=""
+scan_term_pid=""
 
 # Check required tools
 check_tools() {
@@ -443,6 +506,13 @@ jam_attack() {
 # Main execution flow
 main() {
   clear
+
+  if [[ "$skip_update" != true ]]; then
+    check_update
+  else
+    echo -e "${YELLOW}[!] Skipping update check (forced run).${RESET}"
+  fi
+
   echo -e "${CYAN}Enhanced WIFI-JAMMER v$_version_ ${RESET}"
   echo -e "${YELLOW}For educational and authorized testing purposes only!${RESET}"
   echo ""
@@ -466,4 +536,4 @@ security=""
 attack_type=""
 
 # Run main function
-main
+main $@
