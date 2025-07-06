@@ -1,4 +1,4 @@
-# WiFi Jammer v1.2
+# 😈 WiFi Jammer v1.3
 
 An advanced WiFi network testing tool with enhanced features, improved user interface, and multiple attack methods.
 
@@ -23,6 +23,7 @@ An advanced WiFi network testing tool with enhanced features, improved user inte
 - **Protected Management Frame (PMF) Detection** - Warns about modern security features
 - **Automatic Cleanup** - Proper restoration of network settings on exit
 - **Enhanced Error Handling** - Better validation and user feedback
+- **Auto-Update Support** - Automatically checks and updates the tool when a new version is released
 
 ### Original Version (wifi-jammer)
 - Basic monitor mode control
@@ -55,6 +56,10 @@ bash setup.sh
 Simply run the command after setup:
 ```bash
 sudo wifi-jammer
+```
+For help section:
+```bash
+sudo wifi-jammer -h
 ```
 
 **Step-by-step process:**
@@ -164,6 +169,7 @@ This project is for educational purposes only, licensed under the GNU General Pu
 
 ## 🔄 Version History
 
+- **v1.3** - Introduced auto-update feature, skip update mode with `--force`, and CLI help option `--help`
 - **v1.2** - Complete rewrite with interactive UI, multiple attack methods, advanced features, and enhanced security analysis
 - **v1.0** - Basic WiFi jammer functionality
 
